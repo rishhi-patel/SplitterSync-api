@@ -12,14 +12,29 @@ router.get("/", async (req, res) => {
     res.status(500).json({ message: err.message })
   }
 })
+// Get all groups
+router.get("/me", async (req, res) => {
+  try {
+    const userId = req.user
+    const groups = await Group.find({ members: { $in: [userId] } }).populate(
+      "members",
+      "name email"
+    )
+    res.json(groups)
+  } catch (err) {
+    res.status(500).json({ message: err.message })
+  }
+})
 
 // Create a new group
 router.post("/", async (req, res) => {
-  const group = new Group({
-    name: req.body.name,
-    members: req.body.members,
-  })
   try {
+    const userId = req.user
+    console.log(userId)
+    const group = new Group({
+      name: req.body.name,
+      members: [userId, ...req.body.members],
+    })
     const newGroup = await group.save()
     res.status(201).json(newGroup)
   } catch (err) {
