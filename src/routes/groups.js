@@ -1,7 +1,6 @@
 const express = require("express")
 const router = express.Router()
 const Group = require("../models/Group")
-const User = require("../models/User")
 
 // Get all groups
 router.get("/", async (req, res) => {

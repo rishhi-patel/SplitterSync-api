@@ -1,27 +1,13 @@
 const express = require("express")
 const router = express.Router()
-const Expense = require("../models/Expense")
 const mongoose = require("mongoose")
 
-// Create a new expense
-router.post("/", async (req, res) => {
-  const expense = new Expense({
-    amount: req.body.amount,
-    description: req.body.description,
-    paidBy: req.body.paidBy,
-    splitAmong: req.body.splitAmong,
-    group: req.body.group,
-  })
-  try {
-    const newExpense = await expense.save()
-    res.status(201).json(newExpense)
-  } catch (err) {
-    res.status(400).json({ message: err.message })
-  }
-})
+const Expense = require("../models/Expense")
+const Balance = require("../models/Balance")
+const { updateBalances } = require("../utils/expenseUtils")
 
 // Get expenses by user
-router.get("/", async (req, res) => {
+router.get("/activity", async (req, res) => {
   try {
     const userId = new mongoose.Types.ObjectId(req.user) // Assuming this is the user ID obtained from authentication
 
@@ -102,6 +88,84 @@ router.get("/", async (req, res) => {
   }
 })
 
+router.get("/", async (req, res) => {
+  // Function to get balances for a specified user
+  try {
+    const userIdObj = new mongoose.Types.ObjectId(req.user) // Convert to ObjectId
+
+    const pipeline = [
+      {
+        $match: {
+          $or: [{ user1: userIdObj }, { user2: userIdObj }],
+        },
+      },
+      {
+        $project: {
+          _id: 0, // Optionally remove the ID from the result
+          otherUser: {
+            $cond: {
+              if: { $eq: ["$user1", userIdObj] },
+              then: "$user2",
+              else: "$user1",
+            },
+          },
+          owesOrLent: {
+            $cond: {
+              if: {
+                $and: [{ $eq: ["$user1", userIdObj] }, "$user1OwesUser2"],
+              },
+              then: "owes",
+              else: {
+                $cond: {
+                  if: {
+                    $and: [
+                      { $eq: ["$user2", userIdObj] },
+                      { $not: ["$user1OwesUser2"] },
+                    ],
+                  },
+                  then: "owes",
+                  else: "lent",
+                },
+              },
+            },
+          },
+          amount: {
+            $cond: {
+              if: { $lt: ["$amount", 0] },
+              then: { $multiply: ["$amount", -1] }, // Convert to positive if negative
+              else: "$amount",
+            },
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "otherUser",
+          foreignField: "_id",
+          as: "otherUserDetails",
+        },
+      },
+      {
+        $unwind: "$otherUserDetails",
+      },
+      {
+        $project: {
+          otherUserName: "$otherUserDetails.name",
+          otherUserEmail: "$otherUserDetails.email",
+          owesOrLent: 1,
+          amount: 1,
+        },
+      },
+    ]
+
+    const results = await Balance.aggregate(pipeline)
+    res.json(results)
+  } catch (err) {
+    res.status(500).json({ message: err.message })
+  }
+})
+
 // Get expenses in a group
 router.get("/group/:groupId", async (req, res) => {
   try {
@@ -161,6 +225,85 @@ router.get("/:expenseId", async (req, res) => {
     res.json(result)
   } catch (err) {
     res.status(500).json({ message: err.message })
+  }
+})
+
+// Create a new expense
+router.post("/", async (req, res) => {
+  const expense = new Expense({
+    amount: req.body.amount,
+    description: req.body.description,
+    paidBy: req.body.paidBy,
+    splitAmong: req.body.splitAmong,
+    group: req.body.group,
+  })
+  try {
+    const newExpense = await expense.save()
+    await updateBalances(newExpense)
+    res.status(201).json(newExpense)
+  } catch (err) {
+    res.status(400).json({ message: err.message })
+  }
+})
+
+// Update an existing expense
+router.put("/:id", async (req, res) => {
+  try {
+    const { id } = req.params
+    const { amount, description, paidBy, splitAmong, group } = req.body
+
+    // Find and temporarily store the old expense for balance adjustments
+    const oldExpense = await Expense.findById(id)
+    if (!oldExpense) {
+      return res.status(404).json({ message: "Expense not found" })
+    }
+
+    // Update the expense document
+    const updatedExpense = await Expense.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          amount,
+          description,
+          paidBy,
+          splitAmong,
+          group,
+        },
+      },
+      { new: true }
+    )
+
+    // Reverse balances for the old expense details
+    await updateBalances(oldExpense, true) // true indicates reversal
+    // Update balances with the new expense details
+    await updateBalances(updatedExpense)
+
+    res.status(200).json(updatedExpense)
+  } catch (err) {
+    res.status(400).json({ message: err.message })
+  }
+})
+
+// Delete an expense
+router.delete("/:id", async (req, res) => {
+  try {
+    const { id } = req.params
+
+    // Find and temporarily store the expense for balance adjustments
+    const expense = await Expense.findById(id)
+    if (!expense) {
+      return res.status(404).json({ message: "Expense not found" })
+    }
+
+    // Delete the expense
+    await Expense.findByIdAndDelete(id)
+
+    // Reverse the balances impacted by this expense
+    await updateBalances(expense, true) // Reversal indicated by true
+
+    res.status(200).send("Expense deleted successfully")
+  } catch (err) {
+    res.status(400).json({ message: err.message })
   }
 })
 

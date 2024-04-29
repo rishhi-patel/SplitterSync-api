@@ -3,7 +3,7 @@ const secret = "your_secret_key"
 
 const getToken = (userID) => {
   return jwt.sign({ userId: userID }, secret, {
-    expiresIn: "1h",
+    expiresIn: "30d",
   })
 }
 
